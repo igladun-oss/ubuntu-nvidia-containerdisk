@@ -137,18 +137,22 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Prepare uncompressed qcow2 for scanning
+      - name: Prepare raw disk image for scanning
         run: |
+          # Trivy's qcow2 disk driver misreads sector 0 ("Invalid master boot
+          # record signature") regardless of compression, so convert to a raw
+          # disk image (sparse) whose sector 0 is the real GPT protective MBR.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-utils
-          qemu-img convert -O qcow2 out/ubuntu-noble-golden.qcow2 out/ubuntu-noble-scan.qcow2
-          qemu-img info out/ubuntu-noble-scan.qcow2
+          qemu-img convert -O raw out/ubuntu-noble-golden.qcow2 out/ubuntu-noble-scan.raw
+          ls -lh out/ubuntu-noble-scan.raw
+          df -h .
 
       - name: Generate SBOM (CycloneDX) from baked qcow2
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: vm
-          scan-ref: out/ubuntu-noble-scan.qcow2
+          scan-ref: out/ubuntu-noble-scan.raw
           format: cyclonedx
           output: sbom.cdx.json
           scanners: vuln
@@ -173,7 +177,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: vm
-          scan-ref: out/ubuntu-noble-scan.qcow2
+          scan-ref: out/ubuntu-noble-scan.raw
           format: sarif
           output: trivy-results.sarif
           scanners: vuln
