@@ -88,6 +88,15 @@ if [ ! -f "${BASE_IMG}" ]; then
   curl -fL -o "${BASE_IMG}" "${BASE_IMG_URL}"
 fi
 
+# Verify the base image against the upstream SHA256SUMS entry when supplied
+# (CI passes the amd64 checksum it already read for cache-keying). Runs whether
+# the image was just downloaded or restored from cache, pinning the exact
+# upstream artifact recorded in provenance.
+if [ -n "${BASE_IMG_SHA256:-}" ]; then
+  echo "Verifying base image against upstream SHA256 ${BASE_IMG_SHA256}..."
+  echo "${BASE_IMG_SHA256}  ${BASE_IMG}" | sha256sum -c -
+fi
+
 echo "[3/6] Creating fresh golden qcow2..."
 cp "${BASE_IMG}" "${GOLD_IMG}"
 qemu-img resize "${GOLD_IMG}" "${DISK_SIZE}"
@@ -112,7 +121,7 @@ qemu-system-x86_64 \
   -m "${QEMU_MEM}" \
   -drive if=pflash,format=raw,readonly=on,file="${QEMU_UEFI_CODE}" \
   -drive if=pflash,format=raw,file="${UEFI_VARS}" \
-  -drive file="${GOLD_IMG}",if=virtio \
+  -drive file="${GOLD_IMG}",if=virtio,discard=unmap,detect-zeroes=unmap \
   -drive file="${SEED_ISO}",format=raw,if=virtio \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
