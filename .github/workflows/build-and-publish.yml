@@ -1,0 +1,138 @@
+name: Build And Publish ContainerDisk
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      force_bake:
+        description: "Force a fresh QEMU bake even on a cache hit"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name
+        id: prep
+        run: echo "image_name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ubuntu-nvidia-containerdisk" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upstream Ubuntu image serial
+        id: serial
+        run: |
+          set -euo pipefail
+          sums="$(curl -fsSL https://cloud-images.ubuntu.com/noble/current/SHA256SUMS)"
+          serial="$(printf '%s\n' "$sums" | awk '/noble-server-cloudimg-amd64\.img$/ {print $1; exit}')"
+          if [ -z "$serial" ]; then
+            echo "Could not resolve upstream amd64 image checksum" >&2
+            exit 1
+          fi
+          echo "serial=$serial" >> "$GITHUB_OUTPUT"
+          echo "Upstream noble amd64 serial (sha256): $serial"
+
+      - name: Restore baked golden qcow2 from cache
+        id: cache_bake
+        uses: useblacksmith/cache/restore@v5
+        with:
+          path: out/ubuntu-noble-golden.qcow2
+          key: bake-${{ hashFiles('scripts/bake-image.sh', 'cloud-init/**') }}-${{ steps.serial.outputs.serial }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prep.outputs.image_name }}
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: Install bake dependencies
+        if: steps.cache_bake.outputs.cache-hit != 'true' || github.event.inputs.force_bake == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl \
+            genisoimage \
+            ovmf \
+            qemu-system-x86 \
+            qemu-utils
+
+      - name: Cache upstream Ubuntu base image
+        if: steps.cache_bake.outputs.cache-hit != 'true' || github.event.inputs.force_bake == 'true'
+        uses: useblacksmith/cache@v5
+        with:
+          path: out/ubuntu-noble-base.qcow2
+          key: noble-base-${{ steps.serial.outputs.serial }}
+
+      - name: Bake golden qcow2 (KVM-accelerated)
+        if: steps.cache_bake.outputs.cache-hit != 'true' || github.event.inputs.force_bake == 'true'
+        run: ./scripts/bake-image.sh
+
+      - name: Save baked golden qcow2 to cache
+        if: steps.cache_bake.outputs.cache-hit != 'true'
+        uses: useblacksmith/cache/save@v5
+        with:
+          path: out/ubuntu-noble-golden.qcow2
+          key: bake-${{ hashFiles('scripts/bake-image.sh', 'cloud-init/**') }}-${{ steps.serial.outputs.serial }}
+
+      - name: Set up Blacksmith Docker builder
+        uses: useblacksmith/setup-docker-builder@v2
+
+      - name: Build and push containerDisk image
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## containerDisk build"
+            echo ""
+            if [ "${{ steps.cache_bake.outputs.cache-hit }}" = "true" ] && [ "${{ github.event.inputs.force_bake }}" != "true" ]; then
+              echo "- **Bake cache:** hit (QEMU bake skipped)"
+            else
+              echo "- **Bake cache:** miss (fresh QEMU bake)"
+            fi
+            if [ -f out/ubuntu-noble-golden.qcow2 ]; then
+              echo "- **Golden qcow2 size:** $(du -h out/ubuntu-noble-golden.qcow2 | cut -f1)"
+            fi
+            echo ""
+            echo "### Pushed tags"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,245 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+
+bootcmd:
+  - [ bash, -lc, "systemctl mask --now fwupd-refresh.service fwupd-refresh.timer fwupd.service || true" ]
+
+write_files:
+  - path: /usr/local/sbin/bootstrap-nvidia.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+
+      NVIDIA_DRIVER_BRANCH=580
+      # NVIDIA's Ubuntu 24.04 repo publishes this requested driver as 580.105.08-0ubuntu1.
+      NVIDIA_DRIVER_VERSION=580.105.08-0ubuntu1
+      NVIDIA_DRIVER_PACKAGE="nvidia-driver-${NVIDIA_DRIVER_BRANCH}"
+      NVIDIA_HEADLESS_PACKAGE="nvidia-headless-${NVIDIA_DRIVER_BRANCH}"
+      NVIDIA_HEADLESS_NO_DKMS_PACKAGE="nvidia-headless-no-dkms-${NVIDIA_DRIVER_BRANCH}"
+      NVIDIA_UTILS_PACKAGE="nvidia-utils-${NVIDIA_DRIVER_BRANCH}"
+      NVIDIA_MODULES_PACKAGE="linux-modules-nvidia-${NVIDIA_DRIVER_BRANCH}-$(uname -r)"
+      KVER="$(uname -r)"
+
+      # CUDA 13.0 runtime libraries only (no nvcc, no headers, no toolkit). The
+      # cuda-libraries metapackage has no cuda-drivers dependency, so it cannot fight
+      # the exact 580.105.08 driver pin; libcuda.so still comes from libnvidia-compute-580.
+      CUDA_RUNTIME_PACKAGE="cuda-libraries-13-0"
+
+      retry() {
+        for i in 1 2 3 4 5; do
+          "$@" && return 0
+          sleep 5
+        done
+        return 1
+      }
+
+      append_if_missing() {
+        local line="$1"
+        local file="$2"
+        grep -qxF "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
+      }
+
+      retry apt-get update
+      retry apt-get install -y --no-install-recommends ca-certificates curl gnupg
+
+      install -m 0755 -d /usr/share/keyrings
+      curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-cuda-archive-keyring.gpg
+      cat >/etc/apt/sources.list.d/nvidia-cuda.list <<'EOF'
+      deb [signed-by=/usr/share/keyrings/nvidia-cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /
+      EOF
+
+      cat >/etc/apt/preferences.d/nvidia-580-pin <<EOF
+      Package: nvidia-driver-${NVIDIA_DRIVER_BRANCH} nvidia-headless-${NVIDIA_DRIVER_BRANCH} nvidia-headless-no-dkms-${NVIDIA_DRIVER_BRANCH} nvidia-dkms-${NVIDIA_DRIVER_BRANCH} nvidia-kernel-common-${NVIDIA_DRIVER_BRANCH} nvidia-kernel-source-${NVIDIA_DRIVER_BRANCH} nvidia-utils-${NVIDIA_DRIVER_BRANCH} libnvidia-compute-${NVIDIA_DRIVER_BRANCH} libnvidia-common-${NVIDIA_DRIVER_BRANCH} libnvidia-extra-${NVIDIA_DRIVER_BRANCH} libnvidia-cfg1-${NVIDIA_DRIVER_BRANCH} libnvidia-gl-${NVIDIA_DRIVER_BRANCH} libnvidia-fbc1-${NVIDIA_DRIVER_BRANCH} libnvidia-encode-${NVIDIA_DRIVER_BRANCH} libnvidia-decode-${NVIDIA_DRIVER_BRANCH} libnvidia-gpucomp-${NVIDIA_DRIVER_BRANCH} xserver-xorg-video-nvidia-${NVIDIA_DRIVER_BRANCH}
+      Pin: version ${NVIDIA_DRIVER_VERSION}
+      Pin-Priority: 1001
+      EOF
+
+      retry apt-get update
+
+      EXACT_HEADLESS_SPEC="${NVIDIA_HEADLESS_NO_DKMS_PACKAGE}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_HEADLESS_DKMS_SPEC="${NVIDIA_HEADLESS_PACKAGE}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_UTILS_SPEC="${NVIDIA_UTILS_PACKAGE}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_DRIVER_SPEC="${NVIDIA_DRIVER_PACKAGE}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_DKMS_SPEC="nvidia-dkms-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_KERNEL_COMMON_SPEC="nvidia-kernel-common-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_KERNEL_SOURCE_SPEC="nvidia-kernel-source-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_FIRMWARE_SPEC="nvidia-firmware-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_COMPUTE_SPEC="libnvidia-compute-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_COMMON_SPEC="libnvidia-common-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_EXTRA_SPEC="libnvidia-extra-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_GPUCOMP_SPEC="libnvidia-gpucomp-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+      EXACT_CFG_SPEC="libnvidia-cfg1-${NVIDIA_DRIVER_BRANCH}=${NVIDIA_DRIVER_VERSION}"
+
+      # Exact-version driver builds cannot safely use Ubuntu's kernel module package when that
+      # package was built against a newer NVIDIA branch point (for example >= 580.126.09).
+      USE_PREBUILT_MODULES=false
+      if [ -z "${NVIDIA_DRIVER_VERSION}" ] && \
+         apt-cache show "$NVIDIA_MODULES_PACKAGE" >/dev/null 2>&1 && \
+         apt-cache madison "$NVIDIA_HEADLESS_NO_DKMS_PACKAGE" | awk '{print $3}' | grep -Fxq "$NVIDIA_DRIVER_VERSION" && \
+         apt-cache madison "$NVIDIA_UTILS_PACKAGE" | awk '{print $3}' | grep -Fxq "$NVIDIA_DRIVER_VERSION"; then
+        USE_PREBUILT_MODULES=true
+      fi
+
+      if [ "$USE_PREBUILT_MODULES" = "true" ]; then
+        retry apt-get install -y --no-install-recommends \
+          "$NVIDIA_MODULES_PACKAGE" \
+          "$EXACT_KERNEL_COMMON_SPEC" \
+          "$EXACT_KERNEL_SOURCE_SPEC" \
+          "$EXACT_COMPUTE_SPEC" \
+          "$EXACT_COMMON_SPEC" \
+          "$EXACT_EXTRA_SPEC" \
+          "$EXACT_GPUCOMP_SPEC" \
+          "$EXACT_CFG_SPEC" \
+          "$EXACT_HEADLESS_SPEC" \
+          "$EXACT_UTILS_SPEC"
+      else
+        retry apt-get install -y --no-install-recommends \
+          build-essential dkms "linux-headers-$KVER"
+        retry apt-get install -y --no-install-recommends \
+          "$EXACT_FIRMWARE_SPEC" \
+          "$EXACT_DKMS_SPEC" \
+          "$EXACT_KERNEL_COMMON_SPEC" \
+          "$EXACT_KERNEL_SOURCE_SPEC" \
+          "$EXACT_COMPUTE_SPEC" \
+          "$EXACT_COMMON_SPEC" \
+          "$EXACT_EXTRA_SPEC" \
+          "$EXACT_GPUCOMP_SPEC" \
+          "$EXACT_CFG_SPEC" \
+          "$EXACT_UTILS_SPEC" \
+          "$EXACT_HEADLESS_DKMS_SPEC"
+      fi
+
+      cat >/etc/modules-load.d/nvidia.conf <<'EOF'
+      nvidia
+      nvidia_uvm
+      nvidia_modeset
+      nvidia_drm
+      EOF
+
+      cat >/usr/local/sbin/load-nvidia-modules.sh <<'EOF'
+      #!/bin/bash
+      set -euo pipefail
+
+      if ! grep -qs '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null && [ ! -c /dev/nvidiactl ]; then
+        exit 0
+      fi
+
+      for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm; do
+        modprobe "$module" || true
+      done
+      EOF
+      chmod 0755 /usr/local/sbin/load-nvidia-modules.sh
+
+      cat >/etc/systemd/system/nvidia-modules-load.service <<'EOF'
+      [Unit]
+      Description=Load NVIDIA kernel modules when a GPU is present
+      After=systemd-modules-load.service local-fs.target
+      Before=multi-user.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/load-nvidia-modules.sh
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      append_if_missing "nvidia" /etc/initramfs-tools/modules
+      append_if_missing "nvidia_uvm" /etc/initramfs-tools/modules
+      append_if_missing "nvidia_modeset" /etc/initramfs-tools/modules
+      append_if_missing "nvidia_drm" /etc/initramfs-tools/modules
+
+      if [ "$USE_PREBUILT_MODULES" != "true" ]; then
+        dkms autoinstall -k "$KVER" || true
+      fi
+      depmod -a "$KVER" || true
+      update-initramfs -u -k "$KVER"
+      sync
+
+      # CUDA 13.0 runtime libraries (native pairing for driver branch 580). The CUDA apt
+      # repo + keyring configured above already provide this package; install runtime libs
+      # only so no compiler/dev packages and no driver dependency land in the image.
+      retry apt-get install -y --no-install-recommends "${CUDA_RUNTIME_PACKAGE}"
+
+      install -m 0755 -d /usr/share/keyrings
+      curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 https://nvidia.github.io/libnvidia-container/gpgkey \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+        | sed "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+      retry apt-get update
+      retry apt-get install -y --no-install-recommends nvidia-container-toolkit
+
+      systemctl enable nvidia-modules-load.service
+      /usr/local/sbin/load-nvidia-modules.sh || true
+
+      echo "Kernel:" > /root/NVIDIA_OK.txt
+      uname -r >> /root/NVIDIA_OK.txt
+      echo >> /root/NVIDIA_OK.txt
+      dpkg -l | egrep "nvidia-driver|nvidia-headless|nvidia-utils|nvidia-dkms|nvidia-container-toolkit" >> /root/NVIDIA_OK.txt || true
+      nvidia-ctk --version >> /root/NVIDIA_OK.txt || true
+      echo >> /root/NVIDIA_OK.txt
+      echo "CUDA runtime:" >> /root/NVIDIA_OK.txt
+      dpkg -l "${CUDA_RUNTIME_PACKAGE}" >> /root/NVIDIA_OK.txt || true
+
+      # Pin to the exact kernel the NVIDIA module was built for; remove any other kernel
+      # so the VM cannot boot a kernel that lacks the module (DKMS built for uname -r).
+      CUR_KERNEL="$(uname -r)"
+      apt-mark hold "linux-image-${CUR_KERNEL}" "linux-modules-${CUR_KERNEL}" 2>/dev/null || true
+      apt-get purge -y linux-generic linux-image-generic linux-headers-generic 2>/dev/null || true
+      OTHER_KERNELS="$(dpkg-query -W -f='${Package}\n' \
+        'linux-image-*-generic' 'linux-modules-*-generic' \
+        'linux-modules-extra-*-generic' 'linux-headers-*-generic' 2>/dev/null \
+        | grep -v -- "${CUR_KERNEL}" || true)"
+      [ -n "${OTHER_KERNELS}" ] && apt-get purge -y ${OTHER_KERNELS} || true
+
+      # Drop build-time-only toolchain. The DKMS-built NVIDIA module is already
+      # in /lib/modules and initramfs; keep dkms/nvidia-dkms installed so purging
+      # does not remove the built .ko (kernel is pinned, nothing rebuilds at runtime).
+      apt-get purge -y build-essential 'linux-headers-*' 'linux-source-*' || true
+      apt-get autoremove -y --purge || true
+      rm -rf /usr/src/linux-headers-* /usr/src/nvidia-* /var/cache/apt/archives/*.deb
+      update-grub || true
+
+      # Fail the bake loudly if any remaining kernel lacks the NVIDIA module (catches skew in CI).
+      for K in $(ls -1 /lib/modules); do
+        if ! NVIDIA_MODULE_PATH="$(modinfo -k "$K" -n nvidia 2>/dev/null)" \
+          || [ ! -f "$NVIDIA_MODULE_PATH" ]; then
+          echo "FATAL: no NVIDIA module for kernel $K"
+          exit 1
+        fi
+        echo "NVIDIA module for kernel $K: $NVIDIA_MODULE_PATH"
+      done
+      echo "Kernels retained: $(ls -1 /lib/modules | tr '\n' ' ')"
+
+      # Fail the bake loudly if the CUDA 13.0 runtime libraries are missing.
+      CUDART_PATH="$(find /usr -name 'libcudart.so.13*' -print -quit 2>/dev/null || true)"
+      if [ -z "${CUDART_PATH}" ]; then
+        echo "FATAL: libcudart.so.13 not found; CUDA 13.0 runtime install failed"
+        exit 1
+      fi
+      echo "CUDA 13.0 runtime OK: ${CUDART_PATH}"
+
+      cloud-init clean --logs
+      truncate -s 0 /etc/machine-id
+      rm -f /var/lib/dbus/machine-id
+      ln -sf /etc/machine-id /var/lib/dbus/machine-id
+      apt-get clean
+      rm -rf /var/lib/apt/lists/*
+
+      # Zero free space so deleted clusters compress away and qemu-img convert can drop them.
+      dd if=/dev/zero of=/EMPTY bs=1M || true
+      rm -f /EMPTY
+      fstrim -av || true
+      sync
+      poweroff
+
+runcmd:
+  - [ bash, -lc, "/usr/local/sbin/bootstrap-nvidia.sh | tee -a /var/log/bootstrap-nvidia.log" ]
+
+final_message: "Image bootstrap finished and the system is powering off."
