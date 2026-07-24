@@ -33,7 +33,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write
       id-token: write
       attestations: write
 
@@ -159,7 +158,7 @@ jobs:
           list-all-pkgs: "true"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-cyclonedx
           path: sbom.cdx.json
@@ -172,24 +171,6 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           sbom-path: sbom.cdx.json
           push-to-registry: true
-
-      - name: Scan baked qcow2 for vulnerabilities (SARIF)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: vm
-          scan-ref: out/ubuntu-noble-scan.raw
-          format: sarif
-          output: trivy-results.sarif
-          scanners: vuln
-          severity: CRITICAL,HIGH,MEDIUM,LOW
-          exit-code: "0"
-
-      - name: Upload Trivy SARIF to code scanning
-        if: always()
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-vm
 
       - name: Job summary
         if: always()

@@ -27,7 +27,7 @@ image is published and the advisory is disclosed publicly.
 Every published image ships with:
 
 - A CycloneDX SBOM, attested against the image digest.
-- A Trivy vulnerability scan whose SARIF is uploaded to GitHub code scanning.
+- Trivy vulnerability scanning of the baked disk, captured in the CycloneDX SBOM.
 - GitHub Actions pinned to full-length commit SHAs and kept current by Dependabot.
 - The upstream Ubuntu base image verified against its published SHA256 checksum.
 - CodeQL analysis of the CI workflows and OpenSSF Scorecard monitoring.
