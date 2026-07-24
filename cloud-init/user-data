@@ -23,10 +23,12 @@ write_files:
       NVIDIA_MODULES_PACKAGE="linux-modules-nvidia-${NVIDIA_DRIVER_BRANCH}-$(uname -r)"
       KVER="$(uname -r)"
 
-      # CUDA 13.0 runtime libraries only (no nvcc, no headers, no toolkit). The
-      # cuda-libraries metapackage has no cuda-drivers dependency, so it cannot fight
-      # the exact 580.105.08 driver pin; libcuda.so still comes from libnvidia-compute-580.
+      # CUDA 13.0 runtime libraries + full dev toolkit (nvcc, headers, dev libraries).
+      # Neither the cuda-libraries nor the cuda-toolkit metapackage depends on
+      # cuda-drivers, so they cannot fight the exact 580.105.08 driver pin; libcuda.so
+      # still comes from libnvidia-compute-580.
       CUDA_RUNTIME_PACKAGE="cuda-libraries-13-0"
+      CUDA_DEV_PACKAGE="cuda-toolkit-13-0"
 
       retry() {
         for i in 1 2 3 4 5; do
@@ -160,10 +162,22 @@ write_files:
       update-initramfs -u -k "$KVER"
       sync
 
-      # CUDA 13.0 runtime libraries (native pairing for driver branch 580). The CUDA apt
-      # repo + keyring configured above already provide this package; install runtime libs
-      # only so no compiler/dev packages and no driver dependency land in the image.
-      retry apt-get install -y --no-install-recommends "${CUDA_RUNTIME_PACKAGE}"
+      # CUDA 13.0 runtime libraries + dev toolkit (native pairing for driver branch 580).
+      # The CUDA apt repo + keyring configured above already provide these packages;
+      # cuda-toolkit-13-0 brings nvcc and dev headers/libraries but not cuda-drivers
+      # (recommends are skipped), so the exact 580 driver pin is preserved.
+      retry apt-get install -y --no-install-recommends "${CUDA_RUNTIME_PACKAGE}" "${CUDA_DEV_PACKAGE}"
+
+      # nvcc needs a host C/C++ toolchain; install build-essential explicitly (marked
+      # manual) so the autoremove later keeps it for a usable dev image.
+      retry apt-get install -y --no-install-recommends build-essential
+
+      # Put nvcc + CUDA libraries on PATH for interactive/dev sessions.
+      cat >/etc/profile.d/cuda.sh <<'EOF'
+      export PATH=/usr/local/cuda-13.0/bin${PATH:+:${PATH}}
+      export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+      EOF
+      chmod 0644 /etc/profile.d/cuda.sh
 
       install -m 0755 -d /usr/share/keyrings
       curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 https://nvidia.github.io/libnvidia-container/gpgkey \
@@ -186,6 +200,10 @@ write_files:
       echo >> /root/NVIDIA_OK.txt
       echo "CUDA runtime:" >> /root/NVIDIA_OK.txt
       dpkg -l "${CUDA_RUNTIME_PACKAGE}" >> /root/NVIDIA_OK.txt || true
+      echo >> /root/NVIDIA_OK.txt
+      echo "CUDA dev toolkit:" >> /root/NVIDIA_OK.txt
+      dpkg -l "${CUDA_DEV_PACKAGE}" >> /root/NVIDIA_OK.txt || true
+      /usr/local/cuda-13.0/bin/nvcc --version >> /root/NVIDIA_OK.txt 2>&1 || true
 
       # Pin to the exact kernel the NVIDIA module was built for; remove any other kernel
       # so the VM cannot boot a kernel that lacks the module (DKMS built for uname -r).
@@ -198,10 +216,12 @@ write_files:
         | grep -v -- "${CUR_KERNEL}" || true)"
       [ -n "${OTHER_KERNELS}" ] && apt-get purge -y ${OTHER_KERNELS} || true
 
-      # Drop build-time-only toolchain. The DKMS-built NVIDIA module is already
-      # in /lib/modules and initramfs; keep dkms/nvidia-dkms installed so purging
-      # does not remove the built .ko (kernel is pinned, nothing rebuilds at runtime).
-      apt-get purge -y build-essential 'linux-headers-*' 'linux-source-*' || true
+      # Drop the kernel headers/source used to build the NVIDIA module, but keep the
+      # C/C++ toolchain (build-essential) so the baked CUDA dev toolkit's nvcc is usable.
+      # The DKMS-built NVIDIA module is already in /lib/modules and initramfs; keep
+      # dkms/nvidia-dkms installed so purging does not remove the built .ko (kernel is
+      # pinned, nothing rebuilds at runtime).
+      apt-get purge -y 'linux-headers-*' 'linux-source-*' || true
       apt-get autoremove -y --purge || true
       rm -rf /usr/src/linux-headers-* /usr/src/nvidia-* /var/cache/apt/archives/*.deb
       update-grub || true
@@ -224,6 +244,14 @@ write_files:
         exit 1
       fi
       echo "CUDA 13.0 runtime OK: ${CUDART_PATH}"
+
+      # Fail the bake loudly if nvcc (CUDA 13.0 dev toolkit) is missing.
+      NVCC_PATH="/usr/local/cuda-13.0/bin/nvcc"
+      if [ ! -x "${NVCC_PATH}" ]; then
+        echo "FATAL: nvcc not found at ${NVCC_PATH}; CUDA 13.0 dev toolkit install failed"
+        exit 1
+      fi
+      echo "CUDA 13.0 dev toolkit OK: $(${NVCC_PATH} --version | awk '/release/ {print}')"
 
       cloud-init clean --logs
       truncate -s 0 /etc/machine-id

@@ -21,10 +21,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  security-events: write
-  id-token: write
-  attestations: write
 
 concurrency:
   group: build-${{ github.ref }}
@@ -34,6 +30,12 @@ jobs:
   build-and-push:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Free disk space
@@ -44,10 +46,10 @@ jobs:
           df -h || true
 
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -79,7 +81,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.prep.outputs.image_name }}
           tags: |
@@ -135,11 +137,18 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Prepare uncompressed qcow2 for scanning
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils
+          qemu-img convert -O qcow2 out/ubuntu-noble-golden.qcow2 out/ubuntu-noble-scan.qcow2
+          qemu-img info out/ubuntu-noble-scan.qcow2
+
       - name: Generate SBOM (CycloneDX) from baked qcow2
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: vm
-          scan-ref: out/ubuntu-noble-golden.qcow2
+          scan-ref: out/ubuntu-noble-scan.qcow2
           format: cyclonedx
           output: sbom.cdx.json
           scanners: vuln
@@ -153,7 +162,7 @@ jobs:
           retention-days: 90
 
       - name: Attest SBOM against the pushed image
-        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2.4.0
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ${{ steps.prep.outputs.image_name }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -164,7 +173,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: vm
-          scan-ref: out/ubuntu-noble-golden.qcow2
+          scan-ref: out/ubuntu-noble-scan.qcow2
           format: sarif
           output: trivy-results.sarif
           scanners: vuln
