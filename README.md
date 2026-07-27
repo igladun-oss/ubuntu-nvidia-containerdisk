@@ -63,6 +63,16 @@ Needs `curl`, `genisoimage` (or another `mkisofs` provider), `qemu-system-x86_64
 
 The bake uses hardware KVM acceleration when `/dev/kvm` is writable and falls back to software emulation otherwise.
 
+Useful environment overrides:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SKIP_BAKE` | `false` | Reuse the existing `out/ubuntu-noble-golden.qcow2` and only rebuild the OCI image |
+| `PUSH_IMAGE` | `false` | Push the image instead of loading it into the local Docker daemon |
+| `IMAGE_TAG` | `ghcr.io/igladun/ubuntu-nvidia-containerdisk:latest` | Tag to build |
+| `DISK_SIZE` | `100G` | Virtual disk size of the baked qcow2 |
+| `QEMU_SMP` / `QEMU_MEM` | `4` / `8192` | vCPUs and MiB of RAM given to the bake VM |
+
 ## Security
 
 Supply-chain hardening and continuous scanning are built into CI:
