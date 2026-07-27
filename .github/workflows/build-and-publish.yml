@@ -6,6 +6,13 @@ on:
       - main
     tags:
       - "v*"
+    # Docs-only pushes to main should not re-publish the image. Path filters are
+    # not evaluated for pushes of tags, so `v*` releases still always build.
+    paths:
+      - "Dockerfile"
+      - "cloud-init/**"
+      - "scripts/**"
+      - ".github/workflows/build-and-publish.yml"
   workflow_dispatch:
     inputs:
       force_bake:
@@ -27,67 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Docs-only pushes to a branch should not spend ~80 min re-baking the image.
-  # Only branch pushes are filtered here; tag, schedule and manual runs always
-  # build. A path filter on `on.push` cannot express that, because it would also
-  # apply to the `v*` tag pushes in the same block.
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      build: ${{ steps.decide.outputs.build }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Decide whether the image needs rebuilding
-        id: decide
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          if [ "$EVENT_NAME" != "push" ] || [ "$IS_TAG" = "true" ]; then
-            echo "Unfiltered trigger (event=$EVENT_NAME tag=$IS_TAG) — building."
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # No usable base commit (new branch, force-push, pruned history) means
-          # the diff is not trustworthy — build rather than silently skip.
-          if [ -z "$BEFORE" ] || ! git rev-parse --verify --quiet "${BEFORE}^{commit}" >/dev/null; then
-            echo "No usable base commit ('$BEFORE') — building."
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$BEFORE" "$AFTER" -- \
-            Dockerfile \
-            cloud-init \
-            scripts \
-            .github/workflows/build-and-publish.yml)"
-
-          if [ -n "$changed" ]; then
-            echo "Image inputs changed — building:"
-            printf '  %s\n' "$changed"
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No image inputs changed — skipping build. Files in this push:"
-            git diff --name-only "$BEFORE" "$AFTER" | sed 's/^/  /'
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          fi
-
   build-and-push:
-    needs: changes
-    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
