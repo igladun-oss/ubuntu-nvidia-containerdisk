@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   build-and-push:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
@@ -73,7 +73,7 @@ jobs:
 
       - name: Restore baked golden qcow2 from cache
         id: cache_bake
-        uses: useblacksmith/cache/restore@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: out/ubuntu-noble-golden.qcow2
           key: bake-${{ hashFiles('scripts/bake-image.sh', 'cloud-init/**') }}-${{ steps.serial.outputs.serial }}
@@ -102,7 +102,7 @@ jobs:
 
       - name: Cache upstream Ubuntu base image
         if: steps.cache_bake.outputs.cache-hit != 'true' || github.event.inputs.force_bake == 'true'
-        uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: out/ubuntu-noble-base.qcow2
           key: noble-base-${{ steps.serial.outputs.serial }}
@@ -115,19 +115,17 @@ jobs:
 
       - name: Save baked golden qcow2 to cache
         if: steps.cache_bake.outputs.cache-hit != 'true'
-        uses: useblacksmith/cache/save@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: out/ubuntu-noble-golden.qcow2
           key: bake-${{ hashFiles('scripts/bake-image.sh', 'cloud-init/**') }}-${{ steps.serial.outputs.serial }}
 
-      - name: Set up Blacksmith Docker builder
-        uses: useblacksmith/setup-docker-builder@33803e640bd9d674f2843a8c323aa2a7da478d23 # v2
-        with:
-          cache-key: ${{ github.repository }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build and push containerDisk image
         id: build
-        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile

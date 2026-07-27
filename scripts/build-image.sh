@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_TAG="${IMAGE_TAG:-ghcr.io/igladun-oss/ubuntu-nvidia-containerdisk:latest}"
+IMAGE_TAG="${IMAGE_TAG:-ghcr.io/igladun/ubuntu-nvidia-containerdisk:latest}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 PUSH_IMAGE="${PUSH_IMAGE:-false}"
 NO_CACHE="${NO_CACHE:-false}"

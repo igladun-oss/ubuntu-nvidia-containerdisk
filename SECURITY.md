@@ -16,7 +16,7 @@ updates; a weekly scheduled build re-scans that image against newly disclosed CV
 Please report suspected vulnerabilities **privately** — do not open a public issue.
 
 Use GitHub's private vulnerability reporting for this repository:
-<https://github.com/igladun-oss/ubuntu-nvidia-containerdisk/security/advisories/new>
+<https://github.com/igladun/ubuntu-nvidia-containerdisk/security/advisories/new>
 
 Include the affected image tag or commit, a description of the issue, and steps to
 reproduce. You can expect an acknowledgement within 7 days. Once a fix is available a new
