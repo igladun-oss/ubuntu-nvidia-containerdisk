@@ -1,0 +1,66 @@
+name: CI
+
+# Fast lint gate that runs on pull requests so `main` can require a passing
+# status check. The publish workflow deliberately has no `pull_request` trigger
+# (its QEMU bake takes 8-14m and it pushes to GHCR), so it cannot serve as one.
+on:
+  pull_request:
+    branches:
+      - main
+  # Also run on main so the `lint` check context stays registered for the
+  # branch ruleset that requires it.
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # actionlint is not in the runner image and is not a GitHub Action, so
+      # Dependabot cannot bump it. Update both values together from
+      # https://github.com/rhysd/actionlint/releases.
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint shell scripts
+        run: |
+          set -euo pipefail
+          # The linter ships in the GitHub-hosted runner image; a comment must
+          # not start with the tool's own name or it parses as a directive.
+          shellcheck --version
+          shellcheck scripts/*.sh
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 \
+            -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          rm -f "$tarball"
+
+      - name: Lint workflows
+        run: |
+          set -euo pipefail
+          # actionlint shells out to shellcheck, so this also lints the inline
+          # `run:` scripts embedded in every workflow.
+          ./actionlint -color
