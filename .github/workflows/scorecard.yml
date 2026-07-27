@@ -1,7 +1,10 @@
 name: OpenSSF Scorecard
 
 on:
+  # Note: repository rulesets do not fire `branch_protection_rule`, so changes
+  # to the `protect-main` ruleset need a manual re-run to show up.
   branch_protection_rule:
+  workflow_dispatch:
   schedule:
     - cron: "0 7 * * 1"
   push:
